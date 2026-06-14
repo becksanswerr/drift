@@ -40,6 +40,7 @@ class DriftNode:
         self.port = port
         self.peers = {} # {node_id: {"ip": ip, "last_seen": timestamp}}
         self.tasks = [] # List of task strings for logs
+        self.active_elections = {} # {task_id: {"bids": {node_id: score}, "start_time": time.time()}}
         self.running = True
         self.input_buffer = ""
         
@@ -155,6 +156,16 @@ class DriftNode:
                     bid_task_id = message.get("task_id")
                     bid_score = message.get("score")
                     self.add_log(f"[bold yellow]Bid Received:[/bold yellow] Node {sender_id} bid {bid_score}% for [{bid_task_id}]")
+                    if bid_task_id in self.active_elections:
+                        self.active_elections[bid_task_id]["bids"][sender_id] = bid_score
+                        
+                elif msg_type == "election_result":
+                    res_task_id = message.get("task_id")
+                    res_winner_id = message.get("winner_id")
+                    if res_winner_id == self.node_id:
+                        self.add_log(f"[bold green]🏆 I WON task [{res_task_id}]![/bold green] Executing...")
+                    else:
+                        self.add_log(f"[dim]Node {res_winner_id} won task [{res_task_id}][/dim]")
                     
             except socket.timeout:
                 pass
@@ -183,6 +194,10 @@ class DriftNode:
         try:
             self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
             self.add_log(f"[bold blue]Task Sent:[/bold blue] [{task_data['id']}] {task_data['desc']}")
+            self.active_elections[task_data["id"]] = {
+                "bids": {},
+                "start_time": time.time()
+            }
         except Exception as e:
             self.add_log(f"[bold red]Error sending task:[/bold red] {e}")
 
@@ -197,6 +212,34 @@ class DriftNode:
             self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
         except Exception as e:
             pass
+
+    def broadcast_election_result(self, task_id, winner_id):
+        message = {
+            "type": "election_result",
+            "node_id": self.node_id,
+            "task_id": task_id,
+            "winner_id": winner_id
+        }
+        try:
+            self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
+        except:
+            pass
+
+    def manage_elections(self):
+        while self.running:
+            current_time = time.time()
+            for task_id, election in list(self.active_elections.items()):
+                if current_time - election["start_time"] > 3.0: # 3 second bidding window
+                    bids = election["bids"]
+                    if not bids:
+                        self.add_log(f"[bold red]No bids for task [{task_id}]. Task failed.[/bold red]")
+                    else:
+                        winner_id = max(bids, key=bids.get)
+                        highest_score = bids[winner_id]
+                        self.add_log(f"[bold magenta]Election finished for [{task_id}][/bold magenta]. Winner: {winner_id} ({highest_score}%)")
+                        self.broadcast_election_result(task_id, winner_id)
+                    del self.active_elections[task_id]
+            time.sleep(0.5)
 
     def handle_command(self, cmd):
         cmd = cmd.strip()
@@ -275,10 +318,12 @@ class DriftNode:
         
         listener_thread = threading.Thread(target=self.listen_for_broadcasts, daemon=True)
         broadcaster_thread = threading.Thread(target=self.broadcast_presence, daemon=True)
+        election_thread = threading.Thread(target=self.manage_elections, daemon=True)
         input_thread = threading.Thread(target=self.input_loop, daemon=True)
         
         listener_thread.start()
         broadcaster_thread.start()
+        election_thread.start()
         input_thread.start()
         
         try:
