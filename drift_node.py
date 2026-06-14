@@ -74,7 +74,9 @@ class DriftNode:
         table.add_column("Node Name/ID", style="cyan")
         table.add_column("IP Address", style="magenta")
         table.add_column("Capabilities", style="yellow")
-        table.add_column("CPU Usage", justify="right", style="green")
+        table.add_column("CPU", justify="right", style="green")
+        table.add_column("RAM", justify="right", style="blue")
+        table.add_column("GPU", justify="right", style="red")
         
         current_time = time.time()
         for p_id, info in list(self.peers.items()):
@@ -84,10 +86,12 @@ class DriftNode:
                 caps_list = info.get("caps", [])
                 caps_display = f"[{', '.join(c[:4] for c in caps_list)}]" if caps_list else "-"
                 usage_str = f"{info.get('usage', 0)}%"
-                table.add_row(info["name"], info["ip"], caps_display, usage_str)
+                ram_str = f"{info.get('ram', 0)}%"
+                gpu_str = str(info.get('gpu', '-'))
+                table.add_row(info["name"], info["ip"], caps_display, usage_str, ram_str, gpu_str)
             
         if not self.peers:
-            table.add_row("No peers found", "-", "-", "-")
+            table.add_row("No peers found", "-", "-", "-", "-", "-")
             
         return Panel(table, title="Network", border_style="cyan")
 
@@ -147,6 +151,8 @@ class DriftNode:
                         "name": message.get("node_name", sender_id),
                         "ip": addr[0],
                         "usage": message.get("usage", 0),
+                        "ram": message.get("ram", 0),
+                        "gpu": message.get("gpu", "-"),
                         "caps": message.get("caps", []),
                         "last_seen": time.time()
                     }
@@ -191,11 +197,22 @@ class DriftNode:
 
     def broadcast_presence(self):
         while self.running:
+            gpu_val = "-"
+            try:
+                import GPUtil
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu_val = f"{int(gpus[0].load * 100)}%"
+            except ImportError:
+                pass
+
             message = {
                 "type": "discovery",
                 "node_id": self.node_id,
                 "node_name": self.node_name,
                 "usage": int(psutil.cpu_percent(interval=1.0)),
+                "ram": int(psutil.virtual_memory().percent),
+                "gpu": gpu_val,
                 "caps": list(self.caps)
             }
             try:

@@ -64,9 +64,18 @@ class LLMStrategy(BaseStrategy):
         return f"LLM Management (Disk: {models_str}){vram_str}"
 
     def calculate_score(self, task_data):
+        # 1. Yetenek Kontrolü (Capability Check)
+        required_cap = task_data.get("required_cap")
+        if required_cap and required_cap not in self.node.caps:
+            return 0
+            
         if task_data.get("task_type") != "llm_task":
-            # If it's not an LLM task, maybe we don't want it or we just give it a low generic score
-            return 10
+            # Eğer bu bir LLM görevi değilse (örn: memory, tts veya genel görev)
+            # DefaultStrategy gibi CPU/RAM bazlı genel bir puan ver.
+            import psutil
+            cpu_usage = psutil.cpu_percent(interval=0.1)
+            score = 100 - cpu_usage
+            return max(0, min(100, int(score)))
             
         required_model = task_data.get("model")
         
