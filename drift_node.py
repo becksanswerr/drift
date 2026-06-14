@@ -68,50 +68,42 @@ class DriftNode:
         return Panel(text, subtitle=subtitle, expand=True, border_style="blue")
 
     def get_peer_table(self):
-        table = Table(title="Connected Peers", style="green", expand=True)
+        table = Table(expand=True, border_style="green")
         table.add_column("Node Name/ID", style="cyan")
         table.add_column("IP Address", style="magenta")
-        table.add_column("Status", style="green")
+        table.add_column("CPU Usage", justify="right", style="green")
         
         current_time = time.time()
         for p_id, info in list(self.peers.items()):
             if current_time - info["last_seen"] > 10:
                 del self.peers[p_id]
-                self.add_log(f"[bold red]Peer Lost:[/bold red] {info.get('name', p_id)}")
-                continue
-            table.add_row(info.get("name", p_id), info["ip"], "Online")
+            else:
+                usage_str = f"{info.get('usage', 0)}%"
+                table.add_row(info["name"], info["ip"], usage_str)
             
         if not self.peers:
             table.add_row("No peers found", "-", "-")
             
-        return Panel(table, title="Network", border_style="green")
+        return Panel(table, title="Network", border_style="cyan")
 
     def get_logs_panel(self):
         log_text = Text.from_markup("\n".join(self.tasks))
         return Panel(log_text, title="Task & Activity Logs", border_style="yellow")
 
-    def get_input_panel(self):
-        # Blinking cursor effect
-        cursor = "█" if int(time.time() * 2) % 2 == 0 else " "
-        text = Text(f"> {self.input_buffer}{cursor}", style="bold white")
-        return Panel(text, title="Input (Type 'task <desc>', 'taskllm <model> <prompt>', 'mock'/'mockllm', 'quit')", border_style="magenta")
-
     def generate_layout(self):
         layout = Layout(name="root")
         layout.split(
-            Layout(name="header", size=9),
-            Layout(name="main", ratio=1),
-            Layout(name="footer", size=3)
+            Layout(name="header", size=8),
+            Layout(name="body")
         )
-        layout["main"].split_row(
-            Layout(name="peers", ratio=1),
+        layout["body"].split_row(
+            Layout(name="network", ratio=1),
             Layout(name="logs", ratio=2)
         )
         
         layout["header"].update(self.get_header())
-        layout["peers"].update(self.get_peer_table())
+        layout["network"].update(self.get_peer_table())
         layout["logs"].update(self.get_logs_panel())
-        layout["footer"].update(self.get_input_panel())
         
         return layout
 
@@ -134,7 +126,6 @@ class DriftNode:
                     
                     if requester == self.node_id:
                         self.add_log(f"[bold magenta]🎯 Cevap Geldi (ID:{res_task_id}):[/bold magenta] {result_text}")
-                        # In the future, we could save this to a file or trigger an event.
                         
                 elif msg_type == "discovery":
                     if sender_id not in self.peers:
@@ -143,6 +134,7 @@ class DriftNode:
                     self.peers[sender_id] = {
                         "name": message.get("node_name", sender_id),
                         "ip": addr[0],
+                        "usage": message.get("usage", 0),
                         "last_seen": time.time()
                     }
                 elif msg_type == "new_task":
@@ -189,7 +181,8 @@ class DriftNode:
             message = {
                 "type": "discovery",
                 "node_id": self.node_id,
-                "node_name": self.node_name
+                "node_name": self.node_name,
+                "usage": int(psutil.cpu_percent(interval=1.0))
             }
             try:
                 self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
@@ -271,101 +264,6 @@ class DriftNode:
                     del self.active_elections[task_id]
             time.sleep(0.5)
 
-    def handle_command(self, cmd):
-        cmd = cmd.strip()
-        if not cmd: return
-        
-        if cmd.lower() == "quit" or cmd.lower() == "exit":
-            self.running = False
-        elif cmd.lower() == "mock":
-            mock_tasks = [
-                {"desc": "Process Video Frame", "difficulty": random.randint(5, 10), "duration_sec": 30, "urgency": "High"},
-                {"desc": "Train Mini Neural Net", "difficulty": random.randint(7, 10), "duration_sec": 120, "urgency": "Normal"},
-                {"desc": "Scrape Website Data", "difficulty": random.randint(1, 4), "duration_sec": 10, "urgency": "Low"},
-                {"desc": "Render 3D Object", "difficulty": random.randint(6, 9), "duration_sec": 45, "urgency": "High"}
-            ]
-            t = random.choice(mock_tasks)
-            task_data = {
-                "id": str(uuid.uuid4())[:6],
-                "desc": t["desc"],
-                "difficulty": t["difficulty"], # 1-10
-                "duration_sec": t["duration_sec"],
-                "urgency": t["urgency"]
-            }
-            self.broadcast_task(task_data)
-        elif cmd.lower() == "mockllm":
-            models = ["llama3", "mistral", "gemma"]
-            t_model = random.choice(models)
-            task_data = {
-                "id": str(uuid.uuid4())[:6],
-                "desc": f"Generate text using {t_model}",
-                "model": t_model,
-                "task_type": "llm_task"
-            }
-            self.broadcast_task(task_data)
-        elif cmd.lower().startswith("taskllm "):
-            parts = cmd[8:].strip().split(" ", 1)
-            if len(parts) < 2:
-                self.add_log("[bold red]Format: taskllm <model> <prompt>[/bold red]")
-                return
-            t_model = parts[0]
-            t_prompt = parts[1]
-            task_data = {
-                "id": str(uuid.uuid4())[:6],
-                "desc": t_prompt,
-                "model": t_model,
-                "task_type": "llm_task"
-            }
-            self.broadcast_task(task_data)
-        elif cmd.lower().startswith("task "):
-            task_desc = cmd[5:].strip()
-            task_data = {
-                "id": str(uuid.uuid4())[:6],
-                "desc": task_desc,
-                "difficulty": random.randint(1, 5),
-                "duration_sec": 10,
-                "urgency": "Normal"
-            }
-            self.broadcast_task(task_data)
-        else:
-            self.add_log(f"[yellow]Unknown command:[/yellow] {cmd}")
-
-    def input_loop(self):
-        if os.name == 'nt':
-            while self.running:
-                if msvcrt.kbhit():
-                    char = msvcrt.getwche()
-                    if char in ('\r', '\n'):
-                        self.handle_command(self.input_buffer)
-                        self.input_buffer = ""
-                    elif char == '\x08': # backspace
-                        self.input_buffer = self.input_buffer[:-1]
-                    elif char == '\x03': # Ctrl+C
-                        self.running = False
-                    else:
-                        self.input_buffer += char
-                time.sleep(0.05)
-        else:
-            # POSIX non-blocking input for Ubuntu/Linux
-            old_settings = termios.tcgetattr(sys.stdin)
-            try:
-                tty.setcbreak(sys.stdin.fileno())
-                while self.running:
-                    if select.select([sys.stdin], [], [], 0)[0]:
-                        char = sys.stdin.read(1)
-                        if char in ('\r', '\n'):
-                            self.handle_command(self.input_buffer)
-                            self.input_buffer = ""
-                        elif char in ('\x08', '\x7f'): # backspace variants
-                            self.input_buffer = self.input_buffer[:-1]
-                        elif char == '\x03': # Ctrl+C
-                            self.running = False
-                        else:
-                            self.input_buffer += char
-                    time.sleep(0.05)
-            finally:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-
     def start(self):
         os.system("cls" if os.name == "nt" else "clear")
         self.add_log("Node started. Listening for peers...")
@@ -373,12 +271,10 @@ class DriftNode:
         listener_thread = threading.Thread(target=self.listen_for_broadcasts, daemon=True)
         broadcaster_thread = threading.Thread(target=self.broadcast_presence, daemon=True)
         election_thread = threading.Thread(target=self.manage_elections, daemon=True)
-        input_thread = threading.Thread(target=self.input_loop, daemon=True)
         
         listener_thread.start()
         broadcaster_thread.start()
         election_thread.start()
-        input_thread.start()
         
         try:
             with Live(self.generate_layout(), refresh_per_second=10, screen=True) as live:

@@ -19,8 +19,6 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    
-    # Port 50000 dinliyoruz ki ağa atılan broadcast task_result'ı görebilelim
     sock.bind(('', 50000))
     
     task_data = {
@@ -42,17 +40,30 @@ def main():
     
     sock.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', 50000))
     
-    print(f"⏳ Ağdaki en uygun Node seçiliyor ve işleniyor. Lütfen bekleyin...\n")
+    print(f"⏳ Ağdaki en uygun Node seçiliyor (3 saniye ihale süresi)...\n")
+    
+    bids = {}
+    election_start = time.time()
+    election_finished = False
+    winner_id = None
     
     while True:
         try:
-            sock.settimeout(60.0) # 60 saniye bekle
+            sock.settimeout(0.5)
             data, addr = sock.recvfrom(65535)
             try:
                 msg = json.loads(data.decode('utf-8'))
                 
-                if msg.get("type") == "task_result" and msg.get("task_id") == task_id and msg.get("requester_id") == client_id:
-                    print("=" * 60)
+                # İhale (Bidding) aşaması
+                if not election_finished and msg.get("type") == "task_bid" and msg.get("task_id") == task_id:
+                    bidder = msg.get("node_id")
+                    score = msg.get("score")
+                    bids[bidder] = score
+                    print(f"   [Bid] Node {bidder} teklif verdi: {score}%")
+                    
+                # Sonuç bekleme aşaması
+                elif election_finished and msg.get("type") == "task_result" and msg.get("task_id") == task_id and msg.get("requester_id") == client_id:
+                    print("\n" + "=" * 60)
                     print(f"🎯 CEVAP GELDİ! (İşleyen Node: {msg.get('node_id')} - {addr[0]})")
                     print("-" * 60)
                     print(msg.get("result"))
@@ -62,11 +73,32 @@ def main():
             except json.JSONDecodeError:
                 pass
         except socket.timeout:
-            print("❌ Zaman aşımı (60 sn). Ağda boşta bir Node yok veya işlem çok uzun sürdü.")
-            break
+            pass
         except KeyboardInterrupt:
             print("\nİşlem iptal edildi.")
             break
+            
+        # İhaleyi sonlandır ve kazananı belirle
+        if not election_finished and (time.time() - election_start > 3.0):
+            election_finished = True
+            if not bids:
+                print("❌ İhaleye hiç teklif gelmedi. Ağda aktif Node yok veya model bulunamadı.")
+                break
+                
+            winner_id = max(bids, key=bids.get)
+            print(f"🏆 İhale bitti! Kazanan Node: {winner_id} ({bids[winner_id]}% puan ile). İşlem bekleniyor...")
+            
+            # Kazananı ağa duyur
+            election_msg = {
+                "type": "election_result",
+                "node_id": client_id,
+                "task_id": task_id,
+                "winner_id": winner_id
+            }
+            sock.sendto(json.dumps(election_msg).encode('utf-8'), ('<broadcast>', 50000))
+            
+            # Artık cevap için beklemeye geçiyoruz, timeout uzatılır
+            sock.settimeout(60.0)
 
 if __name__ == "__main__":
     main()
