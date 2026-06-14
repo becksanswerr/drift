@@ -3,228 +3,296 @@ import threading
 import json
 import time
 import uuid
+import os
+import sys
+import random
 import psutil
-import argparse
 
-try:
-    import GPUtil
-    HAS_GPUTIL = True
-except ImportError:
-    HAS_GPUTIL = False
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.layout import Layout
+from rich.live import Live
+from rich.table import Table
 
-BROADCAST_PORT = 50000
-BIDDING_WINDOW = 2.0
-JOB_TTL = 30.0
-ANNOUNCE_INTERVAL = 5.0
-CAPABILITY_MATCH_BONUS = 1.5
+# For non-blocking input
+if os.name == 'nt':
+    import msvcrt
+else:
+    import select
+    import tty
+    import termios
 
+console = Console()
+
+DRIFT_BANNER = """
+ ██████╗  ██████╗ ██╗███████╗████████╗
+ ██╔══██╗██╔══██╗██║██╔════╝╚══██╔══╝
+ ██║  ██║██████╔╝██║█████╗     ██║   
+ ██║  ██║██╔══██╗██║██╔══╝     ██║   
+ ██████╔╝██║  ██║██║██║        ██║   
+ ╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝        ╚═╝   
+"""
 
 class DriftNode:
-    def __init__(self, capabilities=None, port=BROADCAST_PORT):
+    def __init__(self, port=50000):
         self.node_id = str(uuid.uuid4())[:8]
         self.port = port
-        self.capabilities = capabilities if capabilities else ["*"]
-        self.is_sdnode = "*" in self.capabilities
-        self.hive = {}
-        self.active_jobs = {}
-        self.lock = threading.Lock()
+        self.peers = {} # {node_id: {"ip": ip, "last_seen": timestamp}}
+        self.tasks = [] # List of task strings for logs
+        self.running = True
+        self.input_buffer = ""
+        
+        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.udp_socket.bind(('', self.port))
+        
+    def add_log(self, message):
+        timestamp = time.strftime("%H:%M:%S")
+        self.tasks.append(f"[{timestamp}] {message}")
+        if len(self.tasks) > 15: # Keep log size manageable
+            self.tasks.pop(0)
 
-        self._detect_hardware()
+    def get_header(self):
+        text = Text(DRIFT_BANNER, style="bold cyan")
+        subtitle = Text(f"Serverless P2P Node Network - ID: {self.node_id}", style="yellow")
+        return Panel(text, subtitle=subtitle, expand=True, border_style="blue")
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("", self.port))
+    def get_peer_table(self):
+        table = Table(title="Connected Peers", style="green", expand=True)
+        table.add_column("Node ID", style="cyan")
+        table.add_column("IP Address", style="magenta")
+        table.add_column("Status", style="green")
+        
+        current_time = time.time()
+        for p_id, info in list(self.peers.items()):
+            if current_time - info["last_seen"] > 10:
+                del self.peers[p_id]
+                self.add_log(f"[bold red]Peer Lost:[/bold red] {p_id}")
+                continue
+            table.add_row(p_id, info["ip"], "Online")
+            
+        if not self.peers:
+            table.add_row("No peers found", "-", "-")
+            
+        return Panel(table, title="Network", border_style="green")
 
-    def _detect_hardware(self):
-        self.cpu_cores = psutil.cpu_count(logical=False)
-        self.total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+    def get_logs_panel(self):
+        log_text = Text.from_markup("\n".join(self.tasks))
+        return Panel(log_text, title="Task & Activity Logs", border_style="yellow")
 
-        if HAS_GPUTIL:
-            gpus = GPUtil.getGPUs()
-            if gpus:
-                self.vram_gb = gpus[0].memoryTotal / 1024
-                self.gpu_name = gpus[0].name
-            else:
-                self.vram_gb = 0
-                self.gpu_name = "CPU Only"
-        else:
-            self.vram_gb = 8.0
-            self.gpu_name = "Simulated GPU"
+    def get_input_panel(self):
+        # Blinking cursor effect
+        cursor = "█" if int(time.time() * 2) % 2 == 0 else " "
+        text = Text(f"> {self.input_buffer}{cursor}", style="bold white")
+        return Panel(text, title="Input (Type 'task <desc>', 'mock' for random tasks, 'quit' to exit)", border_style="magenta")
 
-    def _compute_score(self, task_type=None):
-        cpu_load = psutil.cpu_percent()
-        ram_avail = psutil.virtual_memory().available / (1024 ** 3)
-        score = (self.vram_gb * 10) + (ram_avail * 2) - cpu_load
+    def calculate_qualify_score(self, difficulty, duration_sec):
+        cpu_usage = psutil.cpu_percent(interval=0.1)
+        ram = psutil.virtual_memory()
+        ram_avail_gb = ram.available / (1024**3)
+        
+        score = 100 - cpu_usage
+        if difficulty > 7 and ram_avail_gb < 4.0:
+            score -= 40
+        elif difficulty < 4:
+            score += 10
+            
+        return max(0, min(100, int(score)))
 
-        if task_type and task_type in self.capabilities:
-            score *= CAPABILITY_MATCH_BONUS
+    def generate_layout(self):
+        layout = Layout(name="root")
+        layout.split(
+            Layout(name="header", size=9),
+            Layout(name="main", ratio=1),
+            Layout(name="footer", size=3)
+        )
+        layout["main"].split_row(
+            Layout(name="peers", ratio=1),
+            Layout(name="logs", ratio=2)
+        )
+        
+        layout["header"].update(self.get_header())
+        layout["peers"].update(self.get_peer_table())
+        layout["logs"].update(self.get_logs_panel())
+        layout["footer"].update(self.get_input_panel())
+        
+        return layout
 
-        return max(0.1, score)
+    def listen_for_broadcasts(self):
+        while self.running:
+            try:
+                self.udp_socket.settimeout(1.0) # non-blocking so thread can exit
+                data, addr = self.udp_socket.recvfrom(2048)
+                message = json.loads(data.decode('utf-8'))
+                msg_type = message.get("type")
+                sender_id = message.get("node_id")
+                
+                if sender_id == self.node_id:
+                    continue # Ignore our own messages
+                    
+                if msg_type == "discovery":
+                    if sender_id not in self.peers:
+                        self.add_log(f"[bold green]New Peer:[/bold green] {sender_id} at {addr[0]}")
+                    self.peers[sender_id] = {
+                        "ip": addr[0],
+                        "last_seen": time.time()
+                    }
+                elif msg_type == "new_task":
+                    task_data = message.get("task_data")
+                    task_id = task_data.get("id")
+                    task_desc = task_data.get("desc")
+                    diff = task_data.get("difficulty")
+                    self.add_log(f"[bold cyan]Task Received:[/bold cyan] [{task_id}] {task_desc} (Diff: {diff})")
+                    
+                    # Calculate and show qualify score
+                    score = self.calculate_qualify_score(diff, task_data.get("duration_sec"))
+                    self.add_log(f"[bold magenta]Qualify Score:[/bold magenta] {score}% for [{task_id}]")
+                    self.send_bid(task_id, score)
+                    
+                elif msg_type == "task_bid":
+                    bid_task_id = message.get("task_id")
+                    bid_score = message.get("score")
+                    self.add_log(f"[bold yellow]Bid Received:[/bold yellow] Node {sender_id} bid {bid_score}% for [{bid_task_id}]")
+                    
+            except socket.timeout:
+                pass
+            except Exception as e:
+                if self.running:
+                    pass
 
-    def _broadcast(self, msg: dict):
+    def broadcast_presence(self):
+        while self.running:
+            message = {
+                "type": "discovery",
+                "node_id": self.node_id
+            }
+            try:
+                self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
+            except Exception as e:
+                pass
+            time.sleep(2)
+
+    def broadcast_task(self, task_data):
+        message = {
+            "type": "new_task",
+            "node_id": self.node_id,
+            "task_data": task_data
+        }
         try:
-            self.sock.sendto(json.dumps(msg).encode(), ("<broadcast>", self.port))
-        except Exception:
+            self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
+            self.add_log(f"[bold blue]Task Sent:[/bold blue] [{task_data['id']}] {task_data['desc']}")
+        except Exception as e:
+            self.add_log(f"[bold red]Error sending task:[/bold red] {e}")
+
+    def send_bid(self, task_id, score):
+        message = {
+            "type": "task_bid",
+            "node_id": self.node_id,
+            "task_id": task_id,
+            "score": score
+        }
+        try:
+            self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
+        except Exception as e:
             pass
 
-    def _schedule_job_cleanup(self, job_id):
-        def cleanup():
-            time.sleep(JOB_TTL)
-            with self.lock:
-                self.active_jobs.pop(job_id, None)
-        threading.Thread(target=cleanup, daemon=True).start()
-
-    def _listen(self):
-        print(f"[*] Listening on port {self.port}...")
-        while True:
-            try:
-                data, addr = self.sock.recvfrom(4096)
-                msg = json.loads(data.decode())
-                sender = msg.get("node_id") or msg.get("client_id")
-                if sender == self.node_id:
-                    continue
-                mtype = msg.get("type")
-                if mtype == "discovery":
-                    self._on_discovery(msg, addr)
-                elif mtype == "job":
-                    self._on_job(msg)
-                elif mtype == "bid":
-                    self._on_bid(msg)
-            except Exception:
-                pass
-
-    def _on_discovery(self, msg, addr):
-        sender_id = msg.get("node_id")
-        caps = msg.get("capabilities", [])
-        with self.lock:
-            is_new = sender_id not in self.hive
-            self.hive[sender_id] = {
-                "ip": addr[0],
-                "capabilities": caps,
-                "vram": msg.get("vram"),
-                "last_seen": time.time(),
+    def handle_command(self, cmd):
+        cmd = cmd.strip()
+        if not cmd: return
+        
+        if cmd.lower() == "quit" or cmd.lower() == "exit":
+            self.running = False
+        elif cmd.lower() == "mock":
+            mock_tasks = [
+                {"desc": "Process Video Frame", "difficulty": random.randint(5, 10), "duration_sec": 30, "urgency": "High"},
+                {"desc": "Train Mini Neural Net", "difficulty": random.randint(7, 10), "duration_sec": 120, "urgency": "Normal"},
+                {"desc": "Scrape Website Data", "difficulty": random.randint(1, 4), "duration_sec": 10, "urgency": "Low"},
+                {"desc": "Render 3D Object", "difficulty": random.randint(6, 9), "duration_sec": 45, "urgency": "High"}
+            ]
+            t = random.choice(mock_tasks)
+            task_data = {
+                "id": str(uuid.uuid4())[:6],
+                "desc": t["desc"],
+                "difficulty": t["difficulty"], # 1-10
+                "duration_sec": t["duration_sec"],
+                "urgency": t["urgency"]
             }
-        if is_new:
-            label = "SDNODE" if "*" in caps else f"DNODE {caps}"
-            print(f"\n👋 [DISCOVERY] {label} joined — ID: {sender_id}, VRAM: {msg.get('vram')}GB")
+            self.broadcast_task(task_data)
+        elif cmd.lower().startswith("task "):
+            task_desc = cmd[5:].strip()
+            task_data = {
+                "id": str(uuid.uuid4())[:6],
+                "desc": task_desc,
+                "difficulty": random.randint(1, 5), # Default simple difficulty
+                "duration_sec": 10,
+                "urgency": "Normal"
+            }
+            self.broadcast_task(task_data)
+        else:
+            self.add_log(f"[yellow]Unknown command:[/yellow] {cmd}")
 
-    def _on_job(self, msg):
-        job_id = msg.get("job_id")
-        task_type = msg.get("task_type")
-
-        can_handle = task_type in self.capabilities or self.is_sdnode
-
-        if not can_handle:
-            print(f"\n❌ [JOB] {job_id} ({task_type.upper()}) — capability mismatch, skipping.")
-            return
-
-        with self.lock:
-            if job_id in self.active_jobs:
-                return
-            self.active_jobs[job_id] = {"bids": {}, "status": "bidding", "task_type": task_type}
-
-        self._schedule_job_cleanup(job_id)
-
-        score = self._compute_score(task_type)
-        print(f"\n📩 [JOB] {job_id} ({task_type.upper()}) received — score: {score:.2f}")
-
-        self._broadcast({
-            "type": "bid",
-            "job_id": job_id,
-            "node_id": self.node_id,
-            "score": score,
-            "vram": self.vram_gb,
-        })
-
-        threading.Thread(target=self._resolve, args=(job_id, score), daemon=True).start()
-
-    def _on_bid(self, msg):
-        job_id = msg.get("job_id")
-        with self.lock:
-            if job_id not in self.active_jobs:
-                return
-            if self.active_jobs[job_id]["status"] != "bidding":
-                return
-            self.active_jobs[job_id]["bids"][msg.get("node_id")] = msg.get("score")
-        print(f"   ↳ Bid from {msg.get('node_id')}: {msg.get('score'):.2f}")
-
-    def _resolve(self, job_id, my_score):
-        time.sleep(BIDDING_WINDOW)
-
-        with self.lock:
-            if job_id not in self.active_jobs:
-                return
-            job = self.active_jobs[job_id]
-            if job["status"] != "bidding":
-                return
-            job["bids"][self.node_id] = my_score
-            bids = dict(job["bids"])
-
-        print(f"\n⚖️  [CONSENSUS] Job {job_id} — {len(bids)} bid(s): {bids}")
-        winner_id = max(bids, key=bids.get)
-
-        if winner_id != self.node_id:
-            print(f"😞 Lost to {winner_id} ({bids[winner_id]:.2f}). Standing by.")
-            with self.lock:
-                if job_id in self.active_jobs:
-                    self.active_jobs[job_id]["status"] = "lost"
-            return
-
-        with self.lock:
-            if job_id not in self.active_jobs:
-                return
-            self.active_jobs[job_id]["status"] = "running"
-
-        print(f"🎉 [WON] Job {job_id} — executing in VRAM...")
-
-        self._broadcast({
-            "type": "start_job",
-            "job_id": job_id,
-            "node_id": self.node_id,
-            "score": my_score,
-            "vram": self.vram_gb,
-        })
-
-        time.sleep(3)
-        print(f"✅ [DONE] Job {job_id} completed.")
-
-        with self.lock:
-            if job_id in self.active_jobs:
-                self.active_jobs[job_id]["status"] = "done"
-
-    def _announce(self):
-        while True:
-            self._broadcast({
-                "type": "discovery",
-                "node_id": self.node_id,
-                "capabilities": self.capabilities,
-                "vram": self.vram_gb,
-            })
-            time.sleep(ANNOUNCE_INTERVAL)
+    def input_loop(self):
+        if os.name == 'nt':
+            while self.running:
+                if msvcrt.kbhit():
+                    char = msvcrt.getwche()
+                    if char in ('\r', '\n'):
+                        self.handle_command(self.input_buffer)
+                        self.input_buffer = ""
+                    elif char == '\x08': # backspace
+                        self.input_buffer = self.input_buffer[:-1]
+                    elif char == '\x03': # Ctrl+C
+                        self.running = False
+                    else:
+                        self.input_buffer += char
+                time.sleep(0.05)
+        else:
+            # POSIX non-blocking input for Ubuntu/Linux
+            old_settings = termios.tcgetattr(sys.stdin)
+            try:
+                tty.setcbreak(sys.stdin.fileno())
+                while self.running:
+                    if select.select([sys.stdin], [], [], 0)[0]:
+                        char = sys.stdin.read(1)
+                        if char in ('\r', '\n'):
+                            self.handle_command(self.input_buffer)
+                            self.input_buffer = ""
+                        elif char in ('\x08', '\x7f'): # backspace variants
+                            self.input_buffer = self.input_buffer[:-1]
+                        elif char == '\x03': # Ctrl+C
+                            self.running = False
+                        else:
+                            self.input_buffer += char
+                    time.sleep(0.05)
+            finally:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
     def start(self):
-        label = "SDNODE (Joker)" if self.is_sdnode else f"DNODE {self.capabilities}"
-        print(f"\n=== DRIFT {label} ===")
-        print(f"ID       : {self.node_id}")
-        print(f"GPU      : {self.gpu_name} ({self.vram_gb}GB VRAM)")
-        print(f"RAM      : {self.total_ram_gb:.1f}GB | Cores: {self.cpu_cores}")
-        print(f"DCaps    : {self.capabilities}")
-        print("=" * 36)
-
-        threading.Thread(target=self._listen, daemon=True).start()
-        threading.Thread(target=self._announce, daemon=True).start()
-
+        os.system("cls" if os.name == "nt" else "clear")
+        self.add_log("Node started. Listening for peers...")
+        
+        listener_thread = threading.Thread(target=self.listen_for_broadcasts, daemon=True)
+        broadcaster_thread = threading.Thread(target=self.broadcast_presence, daemon=True)
+        input_thread = threading.Thread(target=self.input_loop, daemon=True)
+        
+        listener_thread.start()
+        broadcaster_thread.start()
+        input_thread.start()
+        
         try:
-            while True:
-                time.sleep(1)
+            with Live(self.generate_layout(), refresh_per_second=10, screen=True) as live:
+                while self.running:
+                    time.sleep(0.1)
+                    live.update(self.generate_layout())
         except KeyboardInterrupt:
-            print(f"\n[{self.node_id}] Shutting down.")
+            self.running = False
 
+        self.udp_socket.close()
+        os.system("cls" if os.name == "nt" else "clear")
+        console.print("[bold red]DRIFT Node shut down successfully.[/bold red]")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Start a DRIFT Node")
-    parser.add_argument("--caps", type=str, help="Comma-separated DCaps (e.g. llm,tts). Omit for SDNODE.")
-    args = parser.parse_args()
-    caps = args.caps.split(",") if args.caps else ["*"]
-    DriftNode(capabilities=caps).start()
+    node = DriftNode()
+    node.start()
