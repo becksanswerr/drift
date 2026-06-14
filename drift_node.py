@@ -6,6 +6,7 @@ import uuid
 import os
 import sys
 import random
+import argparse
 import psutil
 
 from rich.console import Console
@@ -23,6 +24,8 @@ else:
     import tty
     import termios
 
+from strategies import DefaultStrategy, LLMStrategy
+
 console = Console()
 
 DRIFT_BANNER = """
@@ -39,11 +42,13 @@ class DriftNode:
         self.node_id = str(uuid.uuid4())[:8]
         self.node_name = name or self.node_id
         self.port = port
-        self.peers = {} # {node_id: {"ip": ip, "last_seen": timestamp}}
+        self.peers = {} # {node_id: {"ip": ip, "name": name, "last_seen": timestamp}}
         self.tasks = [] # List of task strings for logs
         self.active_elections = {} # {task_id: {"bids": {node_id: score}, "start_time": time.time()}}
+        self.known_tasks = {} # {task_id: task_data} - Cache for tasks we have seen
         self.running = True
         self.input_buffer = ""
+        self.strategy = None # Set externally
         
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -58,7 +63,8 @@ class DriftNode:
 
     def get_header(self):
         text = Text(DRIFT_BANNER, style="bold cyan")
-        subtitle = Text(f"Serverless P2P Node Network - Name: {self.node_name} (ID: {self.node_id})", style="yellow")
+        s_name = self.strategy.get_name() if self.strategy else "None"
+        subtitle = Text(f"Serverless P2P Node Network - Name: {self.node_name} (ID: {self.node_id}) | Strategy: {s_name}", style="yellow")
         return Panel(text, subtitle=subtitle, expand=True, border_style="blue")
 
     def get_peer_table(self):
@@ -88,20 +94,7 @@ class DriftNode:
         # Blinking cursor effect
         cursor = "█" if int(time.time() * 2) % 2 == 0 else " "
         text = Text(f"> {self.input_buffer}{cursor}", style="bold white")
-        return Panel(text, title="Input (Type 'task <desc>', 'mock' for random tasks, 'quit' to exit)", border_style="magenta")
-
-    def calculate_qualify_score(self, difficulty, duration_sec):
-        cpu_usage = psutil.cpu_percent(interval=0.1)
-        ram = psutil.virtual_memory()
-        ram_avail_gb = ram.available / (1024**3)
-        
-        score = 100 - cpu_usage
-        if difficulty > 7 and ram_avail_gb < 4.0:
-            score -= 40
-        elif difficulty < 4:
-            score += 10
-            
-        return max(0, min(100, int(score)))
+        return Panel(text, title="Input (Type 'task <desc>', 'mock'/'mockllm' for tests, 'quit' to exit)", border_style="magenta")
 
     def generate_layout(self):
         layout = Layout(name="root")
@@ -125,7 +118,7 @@ class DriftNode:
     def listen_for_broadcasts(self):
         while self.running:
             try:
-                self.udp_socket.settimeout(1.0) # non-blocking so thread can exit
+                self.udp_socket.settimeout(1.0)
                 data, addr = self.udp_socket.recvfrom(2048)
                 message = json.loads(data.decode('utf-8'))
                 msg_type = message.get("type")
@@ -147,18 +140,20 @@ class DriftNode:
                     task_data = message.get("task_data")
                     task_id = task_data.get("id")
                     task_desc = task_data.get("desc")
-                    diff = task_data.get("difficulty")
-                    self.add_log(f"[bold cyan]Task Received:[/bold cyan] [{task_id}] {task_desc} (Diff: {diff})")
                     
-                    # Calculate and show qualify score
-                    score = self.calculate_qualify_score(diff, task_data.get("duration_sec"))
-                    self.add_log(f"[bold magenta]Qualify Score:[/bold magenta] {score}% for [{task_id}]")
-                    self.send_bid(task_id, score)
+                    self.known_tasks[task_id] = task_data # Cache it
+                    
+                    self.add_log(f"[bold cyan]Task Received:[/bold cyan] ID:{task_id} - {task_desc}")
+                    
+                    if self.strategy:
+                        score = self.strategy.calculate_score(task_data)
+                        self.add_log(f"[bold magenta]Qualify Score:[/bold magenta] {score}% for ID:{task_id}")
+                        self.send_bid(task_id, score)
                     
                 elif msg_type == "task_bid":
                     bid_task_id = message.get("task_id")
                     bid_score = message.get("score")
-                    self.add_log(f"[bold yellow]Bid Received:[/bold yellow] Node {sender_id} bid {bid_score}% for [{bid_task_id}]")
+                    self.add_log(f"[bold yellow]Bid Received:[/bold yellow] Node {sender_id} bid {bid_score}% for ID:{bid_task_id}")
                     if bid_task_id in self.active_elections:
                         self.active_elections[bid_task_id]["bids"][sender_id] = bid_score
                         
@@ -166,15 +161,17 @@ class DriftNode:
                     res_task_id = message.get("task_id")
                     res_winner_id = message.get("winner_id")
                     if res_winner_id == self.node_id:
-                        self.add_log(f"[bold green]🏆 I WON task [{res_task_id}]![/bold green] Executing...")
+                        self.add_log(f"[bold green]🏆 I WON task ID:{res_task_id}![/bold green] Executing...")
+                        task_data = self.known_tasks.get(res_task_id, {})
+                        if self.strategy:
+                            self.strategy.on_task_won(task_data)
                     else:
-                        self.add_log(f"[dim]Node {res_winner_id} won task [{res_task_id}][/dim]")
+                        self.add_log(f"[dim]Node {res_winner_id} won task ID:{res_task_id}[/dim]")
                     
             except socket.timeout:
                 pass
             except Exception as e:
-                if self.running:
-                    pass
+                pass
 
     def broadcast_presence(self):
         while self.running:
@@ -185,7 +182,7 @@ class DriftNode:
             }
             try:
                 self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
-            except Exception as e:
+            except Exception:
                 pass
             time.sleep(2)
 
@@ -196,8 +193,9 @@ class DriftNode:
             "task_data": task_data
         }
         try:
+            self.known_tasks[task_data["id"]] = task_data
             self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
-            self.add_log(f"[bold blue]Task Sent:[/bold blue] [{task_data['id']}] {task_data['desc']}")
+            self.add_log(f"[bold blue]Task Sent:[/bold blue] ID:{task_data['id']} - {task_data['desc']}")
             self.active_elections[task_data["id"]] = {
                 "bids": {},
                 "start_time": time.time()
@@ -214,7 +212,7 @@ class DriftNode:
         }
         try:
             self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
-        except Exception as e:
+        except Exception:
             pass
 
     def broadcast_election_result(self, task_id, winner_id):
@@ -236,11 +234,11 @@ class DriftNode:
                 if current_time - election["start_time"] > 3.0: # 3 second bidding window
                     bids = election["bids"]
                     if not bids:
-                        self.add_log(f"[bold red]No bids for task [{task_id}]. Task failed.[/bold red]")
+                        self.add_log(f"[bold red]No bids for task ID:{task_id}. Task failed.[/bold red]")
                     else:
                         winner_id = max(bids, key=bids.get)
                         highest_score = bids[winner_id]
-                        self.add_log(f"[bold magenta]Election finished for [{task_id}][/bold magenta]. Winner: {winner_id} ({highest_score}%)")
+                        self.add_log(f"[bold magenta]Election finished for ID:{task_id}[/bold magenta]. Winner: {winner_id} ({highest_score}%)")
                         self.broadcast_election_result(task_id, winner_id)
                     del self.active_elections[task_id]
             time.sleep(0.5)
@@ -267,12 +265,22 @@ class DriftNode:
                 "urgency": t["urgency"]
             }
             self.broadcast_task(task_data)
+        elif cmd.lower() == "mockllm":
+            models = ["llama3", "mistral", "gemma"]
+            t_model = random.choice(models)
+            task_data = {
+                "id": str(uuid.uuid4())[:6],
+                "desc": f"Generate text using {t_model}",
+                "model": t_model,
+                "task_type": "llm_task"
+            }
+            self.broadcast_task(task_data)
         elif cmd.lower().startswith("task "):
             task_desc = cmd[5:].strip()
             task_data = {
                 "id": str(uuid.uuid4())[:6],
                 "desc": task_desc,
-                "difficulty": random.randint(1, 5), # Default simple difficulty
+                "difficulty": random.randint(1, 5),
                 "duration_sec": 10,
                 "urgency": "Normal"
             }
@@ -343,8 +351,41 @@ class DriftNode:
         console.print("[bold red]DRIFT Node shut down successfully.[/bold red]")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="DRIFT P2P Serverless Framework")
+    parser.add_argument("--preload-model", nargs="*", help="List of LLM models to preload into this node")
+    parser.add_argument("--llm-backend", choices=["ollama", "lmstudio", "mock"], help="Backend to use for LLM tasks")
+    parser.add_argument("--llm-url", help="Custom URL for the LLM backend API")
+    args = parser.parse_args()
+
     os.system("cls" if os.name == "nt" else "clear")
     console.print(Text(DRIFT_BANNER, style="bold cyan"))
+    
     node_name = console.input("[bold yellow]Name your Node (press Enter for random ID):[/bold yellow] ").strip()
+    
+    if args.preload_model:
+        strat_choice = "2"
+    else:
+        console.print("\n[bold green]Available Strategies:[/bold green]")
+        console.print("1 - Default Strategy (CPU/RAM scoring)")
+        console.print("2 - LLM Strategy (GPU/Model focused)")
+        strat_choice = console.input("Select strategy [1/2]: ").strip()
+    
     node = DriftNode(name=node_name if node_name else None)
+    
+    if strat_choice == "2" or args.preload_model:
+        backend = args.llm_backend
+        if not backend:
+            console.print("\n[bold yellow]Select LLM Backend:[/bold yellow]")
+            console.print("1 - Ollama (Default URL: http://localhost:11434/api/generate)")
+            console.print("2 - LM Studio (Default URL: http://localhost:1234/v1/chat/completions)")
+            console.print("3 - Mock (Simulation)")
+            b_choice = console.input("Select backend [1/2/3]: ").strip()
+            if b_choice == "1": backend = "ollama"
+            elif b_choice == "2": backend = "lmstudio"
+            else: backend = "mock"
+            
+        node.strategy = LLMStrategy(node, preloaded_models=args.preload_model, backend=backend, backend_url=args.llm_url)
+    else:
+        node.strategy = DefaultStrategy(node)
+        
     node.start()
