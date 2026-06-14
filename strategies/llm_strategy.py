@@ -87,7 +87,7 @@ class LLMStrategy(BaseStrategy):
         
         def run_llm():
             self.node.add_log(f"[dim]LLM Strategy: Generating response for ID:{task_id} using {model} on {self.backend}...[/dim]")
-            
+            reply = None
             try:
                 if self.backend == "ollama":
                     data = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode('utf-8')
@@ -112,12 +112,12 @@ class LLMStrategy(BaseStrategy):
                     time.sleep(4)
                     reply = "This is a simulated response for: " + prompt
                     
-                # Shorten reply for terminal log if it's too long
                 display_reply = reply if len(reply) < 50 else reply[:47] + "..."
                 self.node.add_log(f"[bold green]LLM Reply (ID:{task_id}):[/bold green] {display_reply}")
                 
             except Exception as e:
                 self.node.add_log(f"[bold red]LLM Error (ID:{task_id}):[/bold red] {e}")
+                reply = f"Hata Oluştu: {e}"
                 
             self.on_task_completed(task_id, reply, task_data.get("requester_id"))
             
