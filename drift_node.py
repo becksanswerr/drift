@@ -35,8 +35,9 @@ DRIFT_BANNER = """
 """
 
 class DriftNode:
-    def __init__(self, port=50000):
+    def __init__(self, port=50000, name=None):
         self.node_id = str(uuid.uuid4())[:8]
+        self.node_name = name or self.node_id
         self.port = port
         self.peers = {} # {node_id: {"ip": ip, "last_seen": timestamp}}
         self.tasks = [] # List of task strings for logs
@@ -57,12 +58,12 @@ class DriftNode:
 
     def get_header(self):
         text = Text(DRIFT_BANNER, style="bold cyan")
-        subtitle = Text(f"Serverless P2P Node Network - ID: {self.node_id}", style="yellow")
+        subtitle = Text(f"Serverless P2P Node Network - Name: {self.node_name} (ID: {self.node_id})", style="yellow")
         return Panel(text, subtitle=subtitle, expand=True, border_style="blue")
 
     def get_peer_table(self):
         table = Table(title="Connected Peers", style="green", expand=True)
-        table.add_column("Node ID", style="cyan")
+        table.add_column("Node Name/ID", style="cyan")
         table.add_column("IP Address", style="magenta")
         table.add_column("Status", style="green")
         
@@ -70,9 +71,9 @@ class DriftNode:
         for p_id, info in list(self.peers.items()):
             if current_time - info["last_seen"] > 10:
                 del self.peers[p_id]
-                self.add_log(f"[bold red]Peer Lost:[/bold red] {p_id}")
+                self.add_log(f"[bold red]Peer Lost:[/bold red] {info.get('name', p_id)}")
                 continue
-            table.add_row(p_id, info["ip"], "Online")
+            table.add_row(info.get("name", p_id), info["ip"], "Online")
             
         if not self.peers:
             table.add_row("No peers found", "-", "-")
@@ -135,8 +136,10 @@ class DriftNode:
                     
                 if msg_type == "discovery":
                     if sender_id not in self.peers:
-                        self.add_log(f"[bold green]New Peer:[/bold green] {sender_id} at {addr[0]}")
+                        sender_name = message.get("node_name", sender_id)
+                        self.add_log(f"[bold green]New Peer:[/bold green] {sender_name} at {addr[0]}")
                     self.peers[sender_id] = {
+                        "name": message.get("node_name", sender_id),
                         "ip": addr[0],
                         "last_seen": time.time()
                     }
@@ -177,7 +180,8 @@ class DriftNode:
         while self.running:
             message = {
                 "type": "discovery",
-                "node_id": self.node_id
+                "node_id": self.node_id,
+                "node_name": self.node_name
             }
             try:
                 self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
@@ -339,5 +343,8 @@ class DriftNode:
         console.print("[bold red]DRIFT Node shut down successfully.[/bold red]")
 
 if __name__ == "__main__":
-    node = DriftNode()
+    os.system("cls" if os.name == "nt" else "clear")
+    console.print(Text(DRIFT_BANNER, style="bold cyan"))
+    node_name = console.input("[bold yellow]Name your Node (press Enter for random ID):[/bold yellow] ").strip()
+    node = DriftNode(name=node_name if node_name else None)
     node.start()
