@@ -82,15 +82,34 @@ class LLMStrategy(BaseStrategy):
         # Base score
         score = 0
         
-        if required_model in self.active_vram_models:
-            # Zaten VRAM'e yüklü (Sıcak). Anında cevap verir.
+        if not required_model or required_model.lower() == "any":
+            if self.active_vram_models:
+                score = 100
+            elif self.loaded_models:
+                score = 80
+            else:
+                return 0
+        elif required_model in self.active_vram_models:
             score = 100
         elif required_model in self.loaded_models:
-            # Diskte yüklü ama VRAM'de değil (Soğuk). Yükleme süresi gerekecek.
             score = 80
         else:
-            # Model bu makinede yok. İhaleye girmemeli.
-            return 0
+            # Partial Match (e.g., "gemma4" matches "google/gemma-4-e4b")
+            req_clean = required_model.lower().replace("-", "").replace(":", "")
+            matched = False
+            for m in self.active_vram_models:
+                if req_clean in m.lower().replace("-", "").replace(":", ""):
+                    score = 100
+                    matched = True
+                    break
+            if not matched:
+                for m in self.loaded_models:
+                    if req_clean in m.lower().replace("-", "").replace(":", ""):
+                        score = 80
+                        matched = True
+                        break
+            if not matched:
+                return 0
             
         # Parallel Task Penalty
         # If the node is currently running other tasks, it will be slower due to shared resources
@@ -103,30 +122,55 @@ class LLMStrategy(BaseStrategy):
 
     def on_task_won(self, task_data):
         task_id = task_data.get("id")
-        model = task_data.get("model", "gemma:2b")
+        required_model = task_data.get("model", "any")
+        
+        # Resolve 'any' or partial match to actual model name
+        actual_model = None
+        if required_model.lower() == "any":
+            actual_model = self.active_vram_models[0] if self.active_vram_models else (self.loaded_models[0] if self.loaded_models else None)
+        else:
+            if required_model in self.active_vram_models or required_model in self.loaded_models:
+                actual_model = required_model
+            else:
+                req_clean = required_model.lower().replace("-", "").replace(":", "")
+                for m in self.active_vram_models + self.loaded_models:
+                    if req_clean in m.lower().replace("-", "").replace(":", ""):
+                        actual_model = m
+                        break
+                        
+        if not actual_model:
+            return {"status": "error", "message": "No matching model found"}
+            
         prompt = task_data.get("desc", "Hello!")
         
-        self.active_tasks[task_id] = model
+        self.active_tasks[task_id] = actual_model
         
         import threading
         
         def run_llm():
-            self.node.add_log(f"[dim]LLM Strategy: Generating response for ID:{task_id} using {model} on {self.backend}...[/dim]")
+            self.node.add_log(f"[dim]LLM Strategy: Generating response for ID:{task_id} using {actual_model} on {self.backend}...[/dim]")
             reply = None
             try:
                 if self.backend == "ollama":
-                    data = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode('utf-8')
+                    payload = {
+                        "model": actual_model,
+                        "prompt": prompt,
+                        "stream": False
+                    }
+                    data = json.dumps(payload).encode('utf-8')
                     req = urllib.request.Request(self.backend_url, data=data, headers={'Content-Type': 'application/json'})
                     with urllib.request.urlopen(req) as response:
                         result = json.loads(response.read().decode('utf-8'))
                         reply = result.get("response", "").strip()
                         
                 elif self.backend == "lmstudio":
-                    data = json.dumps({
-                        "model": model, 
+                    payload = {
+                        "model": actual_model,
                         "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.7
-                    }).encode('utf-8')
+                        "temperature": 0.7,
+                        "stream": False
+                    }
+                    data = json.dumps(payload).encode('utf-8')
                     req = urllib.request.Request(self.backend_url, data=data, headers={'Content-Type': 'application/json'})
                     with urllib.request.urlopen(req) as response:
                         result = json.loads(response.read().decode('utf-8'))

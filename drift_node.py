@@ -84,7 +84,7 @@ class DriftNode:
                 del self.peers[p_id]
             else:
                 caps_list = info.get("caps", [])
-                caps_display = f"[{', '.join(c[:4] for c in caps_list)}]" if caps_list else "-"
+                caps_display = f"({', '.join(c[:4] for c in caps_list)})" if caps_list else "-"
                 usage_str = f"{info.get('usage', 0)}%"
                 ram_str = f"{info.get('ram', 0)}%"
                 gpu_str = str(info.get('gpu', '-'))
