@@ -127,7 +127,16 @@ class DriftNode:
                 if sender_id == self.node_id:
                     continue # Ignore our own messages
                     
-                if msg_type == "discovery":
+                elif msg_type == "task_result":
+                    res_task_id = message.get("task_id")
+                    requester = message.get("requester_id")
+                    result_text = message.get("result")
+                    
+                    if requester == self.node_id:
+                        self.add_log(f"[bold magenta]🎯 Cevap Geldi (ID:{res_task_id}):[/bold magenta] {result_text}")
+                        # In the future, we could save this to a file or trigger an event.
+                        
+                elif msg_type == "discovery":
                     if sender_id not in self.peers:
                         sender_name = message.get("node_name", sender_id)
                         self.add_log(f"[bold green]New Peer:[/bold green] {sender_name} at {addr[0]}")
@@ -164,7 +173,9 @@ class DriftNode:
                         self.add_log(f"[bold green]🏆 I WON task ID:{res_task_id}![/bold green] Executing...")
                         task_data = self.known_tasks.get(res_task_id, {})
                         if self.strategy:
-                            self.strategy.on_task_won(task_data)
+                            res = self.strategy.on_task_won(task_data)
+                            if res:
+                                self.broadcast_task_result(res_task_id, task_data.get("requester_id"), res)
                     else:
                         self.add_log(f"[dim]Node {res_winner_id} won task ID:{res_task_id}[/dim]")
                     
@@ -187,21 +198,38 @@ class DriftNode:
             time.sleep(2)
 
     def broadcast_task(self, task_data):
+        task_id = task_data["id"]
+        # Include requester_id so the winner knows where to send the result
+        task_data["requester_id"] = self.node_id
+        
         message = {
             "type": "new_task",
             "node_id": self.node_id,
             "task_data": task_data
         }
         try:
-            self.known_tasks[task_data["id"]] = task_data
+            self.known_tasks[task_id] = task_data
             self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
-            self.add_log(f"[bold blue]Task Sent:[/bold blue] ID:{task_data['id']} - {task_data['desc']}")
-            self.active_elections[task_data["id"]] = {
+            self.add_log(f"[bold blue]Task Sent:[/bold blue] ID:{task_id} - {task_data.get('desc')}")
+            self.active_elections[task_id] = {
                 "bids": {},
                 "start_time": time.time()
             }
         except Exception as e:
             self.add_log(f"[bold red]Error sending task:[/bold red] {e}")
+
+    def broadcast_task_result(self, task_id, requester_id, result):
+        message = {
+            "type": "task_result",
+            "node_id": self.node_id,
+            "task_id": task_id,
+            "requester_id": requester_id,
+            "result": result
+        }
+        try:
+            self.udp_socket.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', self.port))
+        except:
+            pass
 
     def send_bid(self, task_id, score):
         message = {
@@ -366,7 +394,6 @@ class DriftNode:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DRIFT P2P Serverless Framework")
-    parser.add_argument("--preload-model", nargs="*", help="List of LLM models to preload into this node")
     parser.add_argument("--llm-backend", choices=["ollama", "lmstudio", "mock"], help="Backend to use for LLM tasks")
     parser.add_argument("--llm-url", help="Custom URL for the LLM backend API")
     args = parser.parse_args()
@@ -376,17 +403,14 @@ if __name__ == "__main__":
     
     node_name = console.input("[bold yellow]Name your Node (press Enter for random ID):[/bold yellow] ").strip()
     
-    if args.preload_model:
-        strat_choice = "2"
-    else:
-        console.print("\n[bold green]Available Strategies:[/bold green]")
-        console.print("1 - Default Strategy (CPU/RAM scoring)")
-        console.print("2 - LLM Strategy (GPU/Model focused)")
-        strat_choice = console.input("Select strategy [1/2]: ").strip()
+    console.print("\n[bold green]Available Strategies:[/bold green]")
+    console.print("1 - Default Strategy (CPU/RAM scoring)")
+    console.print("2 - LLM Strategy (GPU/Model focused)")
+    strat_choice = console.input("Select strategy [1/2]: ").strip()
     
     node = DriftNode(name=node_name if node_name else None)
     
-    if strat_choice == "2" or args.preload_model:
+    if strat_choice == "2":
         backend = args.llm_backend
         if not backend:
             console.print("\n[bold yellow]Select LLM Backend:[/bold yellow]")
@@ -398,7 +422,7 @@ if __name__ == "__main__":
             elif b_choice == "2": backend = "lmstudio"
             else: backend = "mock"
             
-        node.strategy = LLMStrategy(node, preloaded_models=args.preload_model, backend=backend, backend_url=args.llm_url)
+        node.strategy = LLMStrategy(node, backend=backend, backend_url=args.llm_url)
     else:
         node.strategy = DefaultStrategy(node)
         

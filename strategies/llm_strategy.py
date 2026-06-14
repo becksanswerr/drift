@@ -5,9 +5,8 @@ import urllib.request
 import urllib.error
 
 class LLMStrategy(BaseStrategy):
-    def __init__(self, node, preloaded_models=None, backend="mock", backend_url=None):
+    def __init__(self, node, backend="mock", backend_url=None):
         super().__init__(node)
-        self.loaded_models = preloaded_models if preloaded_models else []
         self.active_tasks = {} # {task_id: model_name}
         self.backend = backend # "ollama", "lmstudio", or "mock"
         
@@ -18,34 +17,35 @@ class LLMStrategy(BaseStrategy):
         else:
             self.backend_url = None
             
-        # Physically preload models into VRAM in the background
-        if self.loaded_models and self.backend in ["ollama", "lmstudio"]:
+        self.loaded_models = []
+        if self.backend in ["ollama", "lmstudio"]:
             import threading
-            threading.Thread(target=self._physical_preload, daemon=True).start()
+            threading.Thread(target=self._fetch_available_models, daemon=True).start()
 
-    def _physical_preload(self):
-        for model in self.loaded_models:
-            self.node.add_log(f"[dim]Physically loading {model} into {self.backend} VRAM...[/dim]")
-            try:
-                if self.backend == "ollama":
-                    # Empty prompt forces Ollama to load the model into VRAM
-                    data = json.dumps({"model": model, "prompt": "", "stream": False}).encode('utf-8')
-                    req = urllib.request.Request(self.backend_url, data=data, headers={'Content-Type': 'application/json'})
-                    with urllib.request.urlopen(req) as response:
-                        pass
-                    self.node.add_log(f"[bold green]✅ {model} successfully loaded into Ollama VRAM.[/bold green]")
-                elif self.backend == "lmstudio":
-                    data = json.dumps({
-                        "model": model, 
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 1
-                    }).encode('utf-8')
-                    req = urllib.request.Request(self.backend_url, data=data, headers={'Content-Type': 'application/json'})
-                    with urllib.request.urlopen(req) as response:
-                        pass
-                    self.node.add_log(f"[bold green]✅ {model} successfully pinged on LM Studio.[/bold green]")
-            except Exception as e:
-                self.node.add_log(f"[bold red]Failed to load {model} on {self.backend}: {e}[/bold red]")
+    def _fetch_available_models(self):
+        import urllib.request
+        import json
+        self.node.add_log(f"[dim]Auto-detecting available models on {self.backend}...[/dim]")
+        try:
+            if self.backend == "ollama":
+                url = self.backend_url.replace("/api/generate", "/api/tags")
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                    self.loaded_models = [m.get("name") for m in result.get("models", [])]
+            elif self.backend == "lmstudio":
+                url = self.backend_url.replace("/chat/completions", "/models")
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                    self.loaded_models = [m.get("id") for m in result.get("data", [])]
+                    
+            if self.loaded_models:
+                self.node.add_log(f"[bold green]✅ Detected Models:[/bold green] {', '.join(self.loaded_models)}")
+            else:
+                self.node.add_log(f"[bold yellow]⚠️ No models found on {self.backend}.[/bold yellow]")
+        except Exception as e:
+            self.node.add_log(f"[bold red]Failed to detect models on {self.backend}: {e}[/bold red]")
 
     def get_name(self):
         models_str = ", ".join(self.loaded_models) if self.loaded_models else "None"
@@ -119,10 +119,13 @@ class LLMStrategy(BaseStrategy):
             except Exception as e:
                 self.node.add_log(f"[bold red]LLM Error (ID:{task_id}):[/bold red] {e}")
                 
-            self.on_task_completed(task_id)
+            self.on_task_completed(task_id, reply, task_data.get("requester_id"))
             
         threading.Thread(target=run_llm, daemon=True).start()
 
-    def on_task_completed(self, task_id):
+    def on_task_completed(self, task_id, reply=None, requester_id=None):
         if task_id in self.active_tasks:
             del self.active_tasks[task_id]
+            if reply and requester_id:
+                # Broadcast the final result back to the network (and the requester)
+                self.node.broadcast_task_result(task_id, requester_id, reply)
