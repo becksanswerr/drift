@@ -94,7 +94,7 @@ class DriftNode:
         # Blinking cursor effect
         cursor = "█" if int(time.time() * 2) % 2 == 0 else " "
         text = Text(f"> {self.input_buffer}{cursor}", style="bold white")
-        return Panel(text, title="Input (Type 'task <desc>', 'mock'/'mockllm' for tests, 'quit' to exit)", border_style="magenta")
+        return Panel(text, title="Input (Type 'task <desc>', 'taskllm <model> <prompt>', 'mock'/'mockllm', 'quit')", border_style="magenta")
 
     def generate_layout(self):
         layout = Layout(name="root")
@@ -271,6 +271,20 @@ class DriftNode:
             task_data = {
                 "id": str(uuid.uuid4())[:6],
                 "desc": f"Generate text using {t_model}",
+                "model": t_model,
+                "task_type": "llm_task"
+            }
+            self.broadcast_task(task_data)
+        elif cmd.lower().startswith("taskllm "):
+            parts = cmd[8:].strip().split(" ", 1)
+            if len(parts) < 2:
+                self.add_log("[bold red]Format: taskllm <model> <prompt>[/bold red]")
+                return
+            t_model = parts[0]
+            t_prompt = parts[1]
+            task_data = {
+                "id": str(uuid.uuid4())[:6],
+                "desc": t_prompt,
                 "model": t_model,
                 "task_type": "llm_task"
             }
