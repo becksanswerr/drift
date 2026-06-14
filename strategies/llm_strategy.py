@@ -17,6 +17,35 @@ class LLMStrategy(BaseStrategy):
             self.backend_url = backend_url or "http://localhost:1234/v1/chat/completions"
         else:
             self.backend_url = None
+            
+        # Physically preload models into VRAM in the background
+        if self.loaded_models and self.backend in ["ollama", "lmstudio"]:
+            import threading
+            threading.Thread(target=self._physical_preload, daemon=True).start()
+
+    def _physical_preload(self):
+        for model in self.loaded_models:
+            self.node.add_log(f"[dim]Physically loading {model} into {self.backend} VRAM...[/dim]")
+            try:
+                if self.backend == "ollama":
+                    # Empty prompt forces Ollama to load the model into VRAM
+                    data = json.dumps({"model": model, "prompt": "", "stream": False}).encode('utf-8')
+                    req = urllib.request.Request(self.backend_url, data=data, headers={'Content-Type': 'application/json'})
+                    with urllib.request.urlopen(req) as response:
+                        pass
+                    self.node.add_log(f"[bold green]✅ {model} successfully loaded into Ollama VRAM.[/bold green]")
+                elif self.backend == "lmstudio":
+                    data = json.dumps({
+                        "model": model, 
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1
+                    }).encode('utf-8')
+                    req = urllib.request.Request(self.backend_url, data=data, headers={'Content-Type': 'application/json'})
+                    with urllib.request.urlopen(req) as response:
+                        pass
+                    self.node.add_log(f"[bold green]✅ {model} successfully pinged on LM Studio.[/bold green]")
+            except Exception as e:
+                self.node.add_log(f"[bold red]Failed to load {model} on {self.backend}: {e}[/bold red]")
 
     def get_name(self):
         models_str = ", ".join(self.loaded_models) if self.loaded_models else "None"

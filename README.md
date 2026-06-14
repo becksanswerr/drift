@@ -1,108 +1,95 @@
-<div align="center">
+# DRIFT: Serverless P2P Node Network & Framework 🚀
 
-# DRIFT: Distributed Routing for Inference and Feature Tasks
+**DRIFT** is a fully decentralized, serverless Peer-to-Peer (P2P) task distribution and execution framework built in Python. It allows multiple machines (Windows, Linux, macOS) on the same network to automatically discover each other, broadcast tasks, and competitively "bid" for those tasks based on their real-time hardware capabilities and active strategies.
 
-**A Serverless Capability-Based Routing Framework for Decentralized AI Workloads**
+![DRIFT Architecture](https://img.shields.io/badge/Architecture-P2P_Serverless-blue) ![Platform](https://img.shields.io/badge/Platform-Cross--Platform-success)
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Framework](https://img.shields.io/badge/Framework-DRIFT_v0.1-orange.svg)]()
+## ✨ Core Features
 
-</div>
-
----
-
-## Abstract
-
-With the exponential growth of Large Language Models (LLMs) and advanced AI pipelines, computational bottlenecks and VRAM limitations have become primary obstacles for researchers and independent developers. Current distributed computing paradigms predominantly rely on centralized servers and complex Model Parallelism algorithms. We introduce **DRIFT (Distributed Routing for Inference and Feature Tasks)**, a novel, purely peer-to-peer (P2P), serverless framework. Instead of parallelizing single models across disparate memory pools, DRIFT introduces **Super Selective Hardware Routing (SSHR)**—a highly efficient capability-based routing protocol. Devices act as autonomous nodes that bid on tasks dynamically based on their real-time hardware state. This repository contains both the theoretical foundations of DRIFT and its official open-source implementation.
+- **No Central Server:** Nodes automatically discover each other using UDP Broadcasts. If a node goes offline, the network adapts instantly.
+- **Dynamic Qualify Scoring (Bidding System):** When a task is broadcast, every node calculates a "Qualify Score" (0-100%). The node with the highest score wins and executes the task.
+- **Modular Strategy Architecture:** Scoring logic is entirely modular. You can easily plug in custom strategies for different types of workloads.
+- **First-Class Local LLM Support:** Native integration with **Ollama** and **LM Studio** for distributed AI inference.
+- **Beautiful Terminal UI:** Real-time dashboards built with `rich`, tracking peers, logs, and elections without blocking user input.
 
 ---
 
-## 1. Introduction
+## 🛠️ Built-in Strategies
 
-The conventional methods for deploying high-parameter LLMs or comprehensive AI pipelines are constrained by two primary factors:
+DRIFT uses a Strategy Pattern to determine how a node scores itself when a task arrives:
 
-1. **Cost & Centralization:** Reliance on monolithic cloud APIs leads to high recurring costs and data privacy concerns.
-2. **The VRAM Ceiling:** Consumer hardware often lacks the requisite VRAM to load massive parameter models individually.
-
-Existing solutions often focus on model splitting (tensor/pipeline parallelism) over network topologies, which results in severe latency overhead and requires intricate master-slave network configurations. DRIFT proposes an alternative: **Hardware Specialization via Decentralized Consensus**.
-
-Rather than forcing every machine to run a fraction of every model, DRIFT treats hardware units as autonomous "Honest Workers" grouped into specialized departments.
-
-## 2. The SSHR Architecture
-
-The core innovation of the DRIFT framework is the **Super Selective Hardware Router (SSHR)**. The architecture eliminates the need for a master orchestrator node, rendering the system entirely fault-tolerant and immune to single-point-of-failure scenarios.
-
-### 2.1 Decentralized Discovery
-
-Nodes continuously broadcast their existence and hardware capabilities (e.g., `["llm", "tts", "vision"]`) across the local subnet using UDP broadcasting. This enables true "plug-and-play" scalability; plugging in a new GPU node immediately expands the network capacity without configuration.
-
-### 2.2 Capability-Based Bidding Algorithm
-
-When a client application dispatches a task to the network, the SSHR protocol initiates a localized auction:
-
-1. **Filtering:** Nodes evaluate if their defined capabilities match the requested task.
-2. **Scoring:** Eligible nodes calculate a dynamic capability score ($S_c$) based on total VRAM capacity ($V_{total}$), available RAM ($R_{avail}$), and current CPU utilization load ($\rho$):
-
-   $$ S*c = \alpha(V*{total}) + \beta(R\_{avail}) - \gamma(\rho) $$
-
-   _(Where $\alpha$, $\beta$, and $\gamma$ are tuning weights defined by the framework)._
-
-3. **Consensus:** Nodes broadcast their $S_c$ over a highly constrained temporal window. The node with the absolute maximum $S_c$ achieves consensus and autonomously acquires the lock on the task.
-
-## 3. Node Taxonomy
-
-To facilitate modularity, DRIFT defines strict hardware typologies:
-
-- **DNODE (Specialized Node):** A physical device dedicated to a specific subset of operations (e.g., restricted entirely to TTS generation).
-- **SDNODE (Super Node):** An unrestricted wildcard node designated by the `*` capability flag, capable of competing in auctions for any incoming task type.
-- **Hive:** The unified namespace representing the collective computational topology of all interconnected DNODEs.
+1. **Default Strategy (CPU/RAM):**
+   Uses `psutil` to analyze the node's real-time CPU usage and available RAM. Perfect for generic computational tasks.
+2. **LLM Management Strategy (GPU/VRAM Focused):**
+   Specifically designed to distribute Large Language Model (LLM) tasks.
+   - Awards **100 points** if the required model is already loaded in the node's memory.
+   - Penalizes the score dynamically if the node is already processing tasks in parallel.
+   - Makes real API calls to local backends (Ollama or LM Studio) to generate responses.
 
 ---
 
-## 4. Implementation & Usage
+## 🚀 Installation & Usage
 
-DRIFT is not purely theoretical; it is designed for immediate production and experimental deployment.
-
-### 4.1 Environment Setup
-
-Hardware polling (CPU/RAM/VRAM) requires the following dependencies:
+1. Clone the repository and install requirements:
 
 ```bash
+git clone https://github.com/becksanswerr/drift.git
+cd drift
 pip install -r requirements.txt
 ```
 
-### 4.2 Initializing the Hive
-
-**Start a Universal Worker (SDNODE):**
-This node will attempt to bid on all jobs broadcast to the network.
+2. Run the node:
 
 ```bash
 python drift_node.py
 ```
 
-**Start a Specialized Department (DNODE):**
-This node is configured strictly for Text-To-Speech execution.
+_Upon startup, you will be prompted to name your node and select a strategy._
+
+### Advanced Startup (LLM Mode)
+
+You can launch a node as a dedicated LLM worker by passing arguments via CLI. This automatically selects the LLM Strategy.
 
 ```bash
-python drift_node.py --caps tts
+# Preload a model (Never unloads)
+python drift_node.py --preload-model gemma:2b
+
+# Specify the backend (ollama, lmstudio, mock)
+python drift_node.py --preload-model gemma-4-e4b --llm-backend lmstudio
 ```
-
-### 4.3 Client Interaction
-
-The client acts strictly as a UI emitter and plays no part in the computational routing.
-
-```bash
-python drift_client.py
-```
-
-_Note: The client will emit jobs to the subnet, allowing researchers to observe the SSHR bidding and consensus mechanics in real time._
 
 ---
 
-## 5. Conclusion & Future Work
+## 💻 Terminal Commands
 
-DRIFT demonstrates that decentralized capability routing offers a highly viable alternative to monolithic cluster computing for AI inference tasks. Future iterations of the protocol will explore zero-trust encrypted job payloads, cross-subnet routing via WebRTC, and dynamic parameter offloading.
+Once the node is running, you can interact with the network using the command bar at the bottom of the UI:
 
-**Citation:**
+- `mock` : Broadcasts a randomly generated generic task (great for testing the CPU strategy).
+- `task <description>` : Broadcasts a custom generic task.
+- `mockllm` : Broadcasts a random LLM generation task.
+- `taskllm <model> <prompt>` : Broadcasts a specific LLM prompt to the network.
+  - _Example:_ `taskllm gemma:2b Sence gökyüzü neden mavi?`
+- `quit` or `exit` : Safely shuts down the node.
 
-> _Becksanswer (2025). DRIFT: A Serverless Capability-Based Routing Framework._
+---
+
+## 🤖 LLM Backend Integration Guide
+
+DRIFT's `LLMStrategy` can directly communicate with your local AI models.
+
+**For Ollama (Ubuntu/Linux/Windows):**
+
+1. Pull the model you want to use: `ollama run gemma4:e4b`
+2. Start DRIFT with Ollama backend (default): `python drift_node.py` -> Select Strategy 2 -> Select Ollama.
+
+**For LM Studio (Windows/macOS):**
+
+1. Open LM Studio and load your desired model.
+2. Start the "Local Server" (↔️ icon) on port 1234.
+3. Start DRIFT and select the LM Studio backend.
+
+When a node wins an LLM task, it will automatically route the prompt to the active backend, generate the response, and log it to the network!
+
+---
+
+_Built with ❤️ for decentralized edge computing._
