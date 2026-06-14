@@ -7,20 +7,31 @@ import urllib.error
 class LLMStrategy(BaseStrategy):
     def __init__(self, node, backend="mock", backend_url=None):
         super().__init__(node)
-        self.active_tasks = {} # {task_id: model_name}
+        self.node = node
         self.backend = backend # "ollama", "lmstudio", or "mock"
+        self.backend_url = backend_url or ("http://localhost:11434/api/generate" if backend == "ollama" else "http://localhost:1234/v1/chat/completions")
+        self.loaded_models = [] # Installed on disk
+        self.active_vram_models = [] # Currently loaded in VRAM
+        self.active_tasks = {} # {task_id: model_name}
         
-        if backend == "ollama":
-            self.backend_url = backend_url or "http://localhost:11434/api/generate"
-        elif backend == "lmstudio":
-            self.backend_url = backend_url or "http://localhost:1234/v1/chat/completions"
-        else:
-            self.backend_url = None
-            
-        self.loaded_models = []
         if self.backend in ["ollama", "lmstudio"]:
             import threading
             threading.Thread(target=self._fetch_available_models, daemon=True).start()
+            if self.backend == "ollama":
+                threading.Thread(target=self._poll_vram, daemon=True).start()
+
+    def _poll_vram(self):
+        import time
+        while True:
+            try:
+                url = self.backend_url.replace("/api/generate", "/api/ps")
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                    self.active_vram_models = [m.get("name") for m in result.get("models", [])]
+            except Exception:
+                self.active_vram_models = []
+            time.sleep(5)
 
     def _fetch_available_models(self):
         import urllib.request
@@ -49,7 +60,8 @@ class LLMStrategy(BaseStrategy):
 
     def get_name(self):
         models_str = ", ".join(self.loaded_models) if self.loaded_models else "None"
-        return f"LLM Management (Preloaded: {models_str})"
+        vram_str = f" (VRAM: {', '.join(self.active_vram_models)})" if self.active_vram_models else ""
+        return f"LLM Management (Disk: {models_str}){vram_str}"
 
     def calculate_score(self, task_data):
         if task_data.get("task_type") != "llm_task":
@@ -61,11 +73,15 @@ class LLMStrategy(BaseStrategy):
         # Base score
         score = 0
         
-        if required_model in self.loaded_models:
+        if required_model in self.active_vram_models:
+            # Zaten VRAM'e yüklü (Sıcak). Anında cevap verir.
             score = 100
+        elif required_model in self.loaded_models:
+            # Diskte yüklü ama VRAM'de değil (Soğuk). Yükleme süresi gerekecek.
+            score = 80
         else:
-            # Model not loaded, would require downloading/loading into VRAM
-            score = 40
+            # Model bu makinede yok. İhaleye girmemeli.
+            return 0
             
         # Parallel Task Penalty
         # If the node is currently running other tasks, it will be slower due to shared resources
