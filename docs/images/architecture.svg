@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 620" width="1120" height="620" role="img" aria-label="DRIFT architecture: three nodes sharing discovery, control and data planes">
+  <defs>
+    <style>
+      .t { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+      .m { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace; }
+      .lbl { font-size: 13px; fill: #8b949e; }
+      .cap { font-size: 12px; fill: #7dd3fc; }
+      .name { font-size: 16px; font-weight: 600; fill: #e6edf3; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+    </marker>
+    <marker id="arrowc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrowv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+
+  <rect width="1120" height="620" rx="18" fill="#0d1117"/>
+  <rect x="0.5" y="0.5" width="1119" height="619" rx="18" fill="none" stroke="#30363d"/>
+
+  <text class="t" x="40" y="48" font-size="20" font-weight="600" fill="#e6edf3">One Hive, three planes, no server</text>
+  <text class="t lbl" x="40" y="72">Every machine runs the same process. There is no coordinator to lose.</text>
+
+  <!-- ---------------- nodes ---------------- -->
+  <!-- node A -->
+  <g>
+    <rect x="40" y="110" width="300" height="180" rx="14" fill="#161b22" stroke="#30363d"/>
+    <text class="t name" x="64" y="142">workshop</text>
+    <text class="m lbl" x="64" y="164">RTX 4090 · 64 GB</text>
+    <g class="m cap">
+      <rect x="64" y="180" width="62" height="24" rx="12" fill="#38bdf8" fill-opacity="0.1" stroke="#38bdf8" stroke-opacity="0.3"/>
+      <text x="78" y="196">llm</text>
+      <rect x="134" y="180" width="76" height="24" rx="12" fill="#38bdf8" fill-opacity="0.1" stroke="#38bdf8" stroke-opacity="0.3"/>
+      <text x="148" y="196">vision</text>
+    </g>
+    <text class="m" x="64" y="230" font-size="12" fill="#4ade80">gemma3:4b resident</text>
+    <text class="m" x="64" y="252" font-size="12" fill="#8b949e">cpu 12% · gpu 8% · 0 active</text>
+    <text class="m" x="64" y="274" font-size="12" fill="#fbbf24">bid 92p</text>
+  </g>
+
+  <!-- node B -->
+  <g>
+    <rect x="410" y="110" width="300" height="180" rx="14" fill="#161b22" stroke="#30363d"/>
+    <text class="t name" x="434" y="142">studio</text>
+    <text class="m lbl" x="434" y="164">M2 Max · 32 GB</text>
+    <g class="m cap">
+      <rect x="434" y="180" width="62" height="24" rx="12" fill="#38bdf8" fill-opacity="0.1" stroke="#38bdf8" stroke-opacity="0.3"/>
+      <text x="448" y="196">llm</text>
+      <rect x="504" y="180" width="62" height="24" rx="12" fill="#38bdf8" fill-opacity="0.1" stroke="#38bdf8" stroke-opacity="0.3"/>
+      <text x="518" y="196">tts</text>
+    </g>
+    <text class="m" x="434" y="230" font-size="12" fill="#8b949e">gemma3 on disk, cold</text>
+    <text class="m" x="434" y="252" font-size="12" fill="#8b949e">cpu 4% · gpu — · 0 active</text>
+    <text class="m" x="434" y="274" font-size="12" fill="#8b949e">bid 26p</text>
+  </g>
+
+  <!-- node C -->
+  <g>
+    <rect x="780" y="110" width="300" height="180" rx="14" fill="#161b22" stroke="#30363d"/>
+    <text class="t name" x="804" y="142">nas</text>
+    <text class="m lbl" x="804" y="164">no GPU · always on</text>
+    <g class="m cap">
+      <rect x="804" y="180" width="86" height="24" rx="12" fill="#38bdf8" fill-opacity="0.1" stroke="#38bdf8" stroke-opacity="0.3"/>
+      <text x="818" y="196">memory</text>
+      <rect x="898" y="180" width="94" height="24" rx="12" fill="#38bdf8" fill-opacity="0.1" stroke="#38bdf8" stroke-opacity="0.3"/>
+      <text x="912" y="196">transcode</text>
+    </g>
+    <text class="m" x="804" y="230" font-size="12" fill="#f87171">no llm capability</text>
+    <text class="m" x="804" y="252" font-size="12" fill="#8b949e">cpu 30% · 1 active</text>
+    <text class="m" x="804" y="274" font-size="12" fill="#8b949e">silent in this auction</text>
+  </g>
+
+  <!-- ---------------- planes ---------------- -->
+  <!-- discovery -->
+  <g>
+    <line x1="40" y1="346" x2="1080" y2="346" stroke="#30363d" stroke-width="1"/>
+    <text class="t" x="40" y="336" font-size="14" font-weight="600" fill="#8b949e">DISCOVERY · UDP :47100</text>
+    <text class="m lbl" x="290" y="336">beacon every 2s — name, caps, live metrics</text>
+    <g stroke="#8b949e" stroke-width="1.6" stroke-dasharray="5 5" marker-end="url(#arrow)" fill="none">
+      <path d="M190 290 L190 340"/>
+      <path d="M560 290 L560 340"/>
+      <path d="M930 290 L930 340"/>
+    </g>
+  </g>
+
+  <!-- control -->
+  <g>
+    <line x1="40" y1="440" x2="1080" y2="440" stroke="#30363d" stroke-width="1"/>
+    <text class="t" x="40" y="430" font-size="14" font-weight="600" fill="#38bdf8">CONTROL · UDP unicast</text>
+    <text class="m lbl" x="290" y="430">bid_request → bid (score + why) · ~1.2s window, closes early</text>
+    <g stroke="#38bdf8" stroke-width="1.8" marker-end="url(#arrowc)" fill="none" opacity="0.85">
+      <path d="M560 366 L200 430"/>
+      <path d="M200 430 L556 434" opacity="0.5"/>
+    </g>
+  </g>
+
+  <!-- data -->
+  <g>
+    <line x1="40" y1="536" x2="1080" y2="536" stroke="#30363d" stroke-width="1"/>
+    <text class="t" x="40" y="526" font-size="14" font-weight="600" fill="#a78bfa">DATA · HTTP :8700</text>
+    <text class="m lbl" x="290" y="526">POST /drift/execute → POST /drift/result (callback, not a held socket)</text>
+    <g stroke="#a78bfa" stroke-width="1.8" marker-end="url(#arrowv)" fill="none" opacity="0.85">
+      <path d="M560 460 L200 524"/>
+      <path d="M200 528 L556 532" opacity="0.5"/>
+    </g>
+  </g>
+
+  <text class="t" x="40" y="580" font-size="13" fill="#8b949e">The prompt only leaves the requester after a winner exists. The control plane carries scores, never payloads.</text>
+  <text class="m" x="40" y="602" font-size="12" fill="#4ade80">result: workshop wins — the weights are already in its VRAM, and loading them elsewhere would cost more than the job.</text>
+</svg>

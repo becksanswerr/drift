@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drift-ai"
+version = "0.3.0"
+description = "Serverless peer-to-peer task routing for local AI hardware"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Kaan Yedikardaşlar" }]
+keywords = ["distributed", "llm", "inference", "p2p", "edge", "routing", "serverless"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+]
+
+# The core is stdlib-only on purpose: the whole pitch is running on machines
+# you already own, so installing it must never turn into a dependency project.
+dependencies = []
+
+[project.optional-dependencies]
+metrics = ["psutil>=5.9"]           # CPU/RAM in bids; without it a node scores as idle
+secure = ["cryptography>=42.0"]     # required if you pass a secret
+gpu = ["GPUtil>=1.4"]               # NVIDIA load sampling
+tui = ["rich>=13.0"]                # dashboards
+all = ["psutil>=5.9", "cryptography>=42.0", "GPUtil>=1.4", "rich>=13.0"]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/becksanswerr/drift"
+Documentation = "https://github.com/becksanswerr/drift/tree/main/docs"
+Issues = "https://github.com/becksanswerr/drift/issues"
+
+[project.scripts]
+drift = "drift.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["B008"]
