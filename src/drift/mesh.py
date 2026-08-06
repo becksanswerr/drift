@@ -33,6 +33,7 @@ import threading
 import time
 import uuid
 
+from .callbacks import check_callback
 from .security import NetworkSecurity
 
 try:
@@ -112,6 +113,12 @@ class MeshNode:
         self.discovery_port = discovery_port
         self.http_port = http_port
         self.security = NetworkSecurity(secret)
+        # Logging happens in the beacon and listen threads, where an exception is
+        # swallowed by the loop and never surfaces. A host whose logger takes its
+        # arguments in a different order would go blind, not loud — so the shape
+        # is verified here, on the calling thread. See callbacks.py.
+        check_callback(on_log, "on_log", "message", level="info", source="node")
+        check_callback(on_peer_change, "on_peer_change", {"node_id": "peers snapshot"})
         self.on_log = on_log or (lambda msg, level="info", source=None: None)
         self.on_peer_change = on_peer_change
 

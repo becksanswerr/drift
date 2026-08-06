@@ -22,6 +22,8 @@ import threading
 import time
 import uuid
 
+from .callbacks import check_callback
+
 DEFAULT_WINDOW = 1.2
 
 
@@ -35,6 +37,14 @@ class Auctioneer:
             bid_detail: optional ``(cap, hint) -> dict`` explaining the score.
             log: optional ``fn(msg, level=..., source=...)``.
         """
+        # Checked here rather than at call time: inside the auction a wrong
+        # signature is indistinguishable from "this node chose not to bid", and
+        # that ambiguity once hid a completely dead auction. See callbacks.py.
+        check_callback(can_serve, "can_serve", "cap")
+        check_callback(score_fn, "score_fn", "cap", {})
+        check_callback(bid_detail, "bid_detail", "cap", {})
+        check_callback(log, "log", "message", level="info", source="drift")
+
         self.mesh = mesh
         self.can_serve = can_serve
         self.score_fn = score_fn
@@ -56,7 +66,9 @@ class Auctioneer:
         try:
             score = self.score_fn(cap, hint)
         except Exception as e:
-            self.log(f"score function failed for '{cap}': {e}", level="warn")
+            # `error`, not `warn`: a node that cannot score cannot bid, and a node
+            # that cannot bid does no work. That is never routine.
+            self.log(f"score function failed for '{cap}': {e}", level="error")
             return
         if score <= 0:
             self.log(f"not bidding on '{cap}' (score={score})", level="debug")
@@ -137,7 +149,7 @@ class Auctioneer:
                             "why": self._detail(cap, hint),
                         }
                 except Exception as e:
-                    self.log(f"local score function failed for '{cap}': {e}", level="warn")
+                    self.log(f"local score function failed for '{cap}': {e}", level="error")
 
         request = {"type": "bid_request", "task_id": task_id, "cap": cap, "hint": hint}
         for peer in providers:
