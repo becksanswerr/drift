@@ -31,13 +31,13 @@ Built by **Vorlabs** as the distributed execution backbone of **Valori** — and
 ## 02 / Installation
 
 ```bash
-pip install vorlabs-drift
+pip install git+https://github.com/becksanswerr/drift.git
 ```
 
 Optional extras when you want live hardware telemetry, encrypted mesh traffic, or the terminal dashboard:
 
 ```bash
-pip install "vorlabs-drift[metrics,secure,gpu,tui]"
+pip install "vorlabs-drift[metrics,secure,gpu,tui] @ git+https://github.com/becksanswerr/drift.git"
 ```
 
 | Extra | Package | Purpose |
