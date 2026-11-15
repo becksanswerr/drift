@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "drift-ai"
-version = "0.3.0"
+name = "vorlabs-drift"
+version = "0.4.0"
 description = "Serverless peer-to-peer task routing for local AI hardware"
 readme = "README.md"
 requires-python = ">=3.9"

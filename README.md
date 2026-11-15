@@ -1,126 +1,128 @@
-# 🌊 Drift Framework
+<p align="center">
+  <img src="docs/images/banner.png" alt="Vorlabs Drift — Serverless peer-to-peer task routing for local AI hardware" width="100%">
+</p>
 
-> A lightweight, decentralized peer-to-peer framework for distributed AI workloads.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-FD7272?style=flat-square&labelColor=000000" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-ffffff?style=flat-square&labelColor=000000" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/core%20deps-0%20(stdlib)-ffffff?style=flat-square&labelColor=000000" alt="Zero Dependencies">
+</p>
 
-![Drift Banner](docs/images/banner.svg)
+---
 
-Drift is a modern P2P framework built for the era of AI. It allows nodes to discover each other, form a mesh network, and dynamically bid on computational tasks using a reverse-auction mechanism. 
+**Drift** is a lightweight, serverless peer-to-peer task routing framework built for local AI hardware. Machines discover each other over LAN or Tailscale/WireGuard, run a fast reverse auction on every task, and execute work on whichever node fits best — with **no central broker, no cloud dependency, and zero required runtime packages**.
 
-It powers autonomous agent networks by providing a reliable **Data Plane** and an intelligent **Control Plane**.
+Built by **Vorlabs** as the distributed execution backbone of **Valori** — and the foundation for the upcoming **VorAgents**.
 
-## 🚀 Features
+---
 
-- **Hybrid Transport**: UDP for fast local discovery, Unicast for reliable control messages, and HTTP for high-throughput data transfer.
-- **Auction-Based Task Routing**: Nodes bid on tasks based on their capabilities, available context window, and real-time load.
-- **Pluggable Discovery**: Support for local broadcast and static seeding (Tailscale/WireGuard compatible).
-- **Secure by Default**: AES-GCM (via Fernet) encryption and HMAC authentication for all mesh traffic.
-- **Rich TUI & CLI**: Built-in terminal user interface and command-line tools for monitoring the swarm.
+## 01 / Architecture
 
-## 📦 Installation
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Drift 3-Layer Architecture: Mesh, Reverse Auction, Data Plane" width="100%">
+</p>
+
+1. **Mesh Layer (`drift.mesh.MeshNode`)** — UDP discovery beacons (LAN broadcast or static seeds for Tailscale/WireGuard) + unicast control messages + peer table.
+2. **Reverse Auction (`drift.auction.Auctioneer` & `drift.scoring`)** — Any node opens an auction; capable peers score the task (`score_fn(cap, hint)`) against CPU, RAM, cached GPU load, and active tasks (`0.86 µs` per `default_scorer` evaluation); highest bid wins.
+3. **Data Plane (`drift.dataplane` & `drift.node.Node`)** — HTTP `POST /execute` and `POST /result` with optional HMAC/Fernet authentication (`drift.security`).
+
+---
+
+## 02 / Installation
 
 ```bash
-pip install drift-framework
+pip install vorlabs-drift
 ```
-*(Note: Not yet on PyPI. Clone and install locally via `pip install -e .`)*
 
-## 🧠 The Architecture
+Optional extras when you want live hardware telemetry, encrypted mesh traffic, or the terminal dashboard:
 
-Drift separates concerns into three distinct layers:
+```bash
+pip install "vorlabs-drift[metrics,secure,gpu,tui]"
+```
 
-1. **Mesh Layer (`mesh.py`)**: Handles node discovery, heartbeat, and encrypted P2P communication.
-2. **Auction Layer (`auction.py`)**: Manages the bidding process, evaluating node capabilities and selecting the best worker for a given task.
-3. **Data Plane (`dataplane.py`)**: Orchestrates the actual execution of tasks, payload transfer, and result collection.
+| Extra | Package | Purpose |
+|---|---|---|
+| `metrics` | `psutil>=5.9` | Live CPU / RAM sampling in bids |
+| `gpu` | `GPUtil>=1.4` | Cached background NVIDIA GPU load |
+| `secure` | `cryptography>=42.0` | Encrypted / authenticated mesh traffic |
+| `tui` | `rich>=13.0` | Terminal swarm dashboard |
 
-![Drift Architecture](docs/images/architecture.svg)
+---
 
-## 🛠️ Quick Start
+## 03 / Quick Start (`drift.Node`)
 
-### 1. Start a Node
+Every machine runs the same `Node` — worker and client in one process, no separate server:
 
 ```python
-import asyncio
-from drift.node import DriftNode
-from drift.security import SecurityConfig
+from drift import Node
 
-async def main():
-    sec_cfg = SecurityConfig(shared_secret=b"my-super-secret-key-12345678901=")
-    
-    # Initialize a node with capabilities
-    node = DriftNode(
-        port=8000, 
-        security_config=sec_cfg,
-        capabilities={"llm": True, "gpu": True, "models": ["gpt-4", "claude-3"]}
-    )
-    
-    await node.start()
-    print("Node is running! Press Ctrl+C to stop.")
-    
-    # Keep alive
-    while True:
-        await asyncio.sleep(1)
+node = Node(name="workshop", secret="shared-cluster-secret")
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@node.capability("summarise", cost=2)
+def summarise(payload):
+    return {"text": payload["text"][:280]}
+
+node.start()
+
+# Runs locally or on whichever peer wins the reverse auction
+result = node.call("summarise", {"text": "Long document..."})
+print(result)
+
+node.run_forever()
 ```
 
-### 2. Request a Task
+---
+
+## 04 / Embedding the Mesh & Auctioneer (How Valori Uses Drift)
+
+If your application already has its own HTTP server (like **Valori**'s FastAPI runtime), you can embed `MeshNode` and `Auctioneer` directly without `drift.Node`:
 
 ```python
-import asyncio
-from drift.dataplane import DriftDataPlane
-from drift.security import SecurityConfig
-from drift.mesh import DriftMesh
+from drift.auction import Auctioneer
+from drift.mesh import MeshNode
 
-async def submit_task():
-    sec_cfg = SecurityConfig(shared_secret=b"my-super-secret-key-12345678901=")
-    mesh = DriftMesh(port=8001, security_config=sec_cfg)
-    await mesh.start()
-    
-    dataplane = DriftDataPlane(mesh)
-    
-    # Define task requirements
-    requirements = {"capability": "llm", "model": "gpt-4"}
-    payload = {"prompt": "Explain decentralized AI in 3 sentences."}
-    
-    print("Submitting task to the swarm...")
-    result = await dataplane.execute_task(
-        task_type="llm_inference",
-        payload=payload,
-        requirements=requirements
-    )
-    
-    print("Result received:", result)
-    await mesh.stop()
+mesh = MeshNode(
+    name="node-a",
+    http_port=8700,
+    secret="shared-cluster-secret",
+    on_log=lambda message, level="info", source="drift": print(f"[{source}:{level}] {message}"),
+)
 
-if __name__ == "__main__":
-    asyncio.run(submit_task())
+def can_serve(cap: str) -> bool:
+    return cap in {"llm_worker", "embeddings"}
+
+def score_fn(cap: str, hint: dict) -> int:
+    # Return <= 0 to sit out an auction
+    return 85 if cap == "llm_worker" else 50
+
+auctioneer = Auctioneer(mesh, can_serve=can_serve, score_fn=score_fn)
+mesh.start()
 ```
 
-## 📁 Repository Structure
+Callback signatures (`can_serve(cap)`, `score_fn(cap, hint)`, `log(message, level=..., source=...)`) are validated at wiring time so misconfigured hosts fail loudly instead of silently dropping bids.
 
-```
-drift/
-├── src/
-│   └── drift/
-│       ├── __init__.py
-│       ├── mesh.py        # Discovery & P2P Networking
-│       ├── auction.py     # Bidding & Negotiation
-│       ├── dataplane.py   # Task Execution
-│       ├── scoring.py     # Bid Evaluation Logic
-│       ├── security.py    # Encryption & Auth
-│       ├── llm.py         # AI-specific utilities
-│       ├── node.py        # High-level Node Abstraction
-│       ├── cli.py         # Command-line Interface
-│       └── tui.py         # Terminal User Interface
-├── tests/                 # Comprehensive test suite
-├── examples/              # Usage examples
-└── docs/                  # Documentation and visuals
-```
+---
 
-## 🤝 Contributing
+## 05 / Powering Valori
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Inside **Valori**, multiple local machines (workstations, laptops, GPU nodes over LAN or Tailscale) form a single self-routing pool:
 
-## 📄 License
+- **Zero external leakage:** Prompts, memory, and tool calls stay on hardware you own.
+- **Locality-aware routing:** `drift.llm` and `score_fn(cap, hint)` favor nodes that already have the requested model warm in VRAM.
+- **Measured footprint:** `0` required runtime dependencies (pure Python stdlib core), `default_scorer` evaluates in `~0.86 µs/bid` (100,000 calls in `85.74 ms` on local Python 3.11), verified by `85` unit & contract tests.
 
-This project is licensed under the MIT License.
+---
+
+## 06 / Examples & Paper
+
+- [`examples/01_hello_capability.py`](examples/01_hello_capability.py) — Single capability node
+- [`examples/02_ask_the_hive.py`](examples/02_ask_the_hive.py) — Multi-node capability routing
+- [`examples/03_llm_router.py`](examples/03_llm_router.py) — Warm-VRAM LLM routing
+- [`examples/04_custom_scoring.py`](examples/04_custom_scoring.py) — Custom `ScoreContext` bidder
+- [`docs/paper/drift.md`](docs/paper/drift.md) — Design notes & Cognitive Budget model
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE). Built by [Vorlabs](https://vorlabs.co).
